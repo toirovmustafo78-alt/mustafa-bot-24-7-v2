@@ -4,3 +4,5 @@ pytz
 Pillow
 SpeechRecognition
 pydub
+flask
+gunicorn

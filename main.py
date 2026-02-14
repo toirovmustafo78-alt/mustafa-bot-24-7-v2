@@ -13,7 +13,22 @@ from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from flask import Flask
+from threading import Thread
 
+# Flask setup for Render keep-alive
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is running 24/7!"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.start()
 
 # Logging setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -167,7 +182,7 @@ async def list_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 online_users += 1
                 status.append("ONLINE")
         
-        user_list_text += f"ID: {user_id}, Status: {", ".join(status) if status else "Normal"}, Messages: {data.get("messages", 0)}\n"
+        user_list_text += f"ID: {user_id}, Status: {', '.join(status) if status else 'Normal'}, Messages: {data.get('messages', 0)}\n"
     
     summary_text = (
         f"\nUmumiy foydalanuvchilar: {total_users}\n"
@@ -279,89 +294,45 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if users.get(user_id, {}).get("is_banned", False):
         await update.message.reply_text("Siz botdan foydalanishdan cheklangansiz.")
         return
-    users[user_id]["last_active"] = datetime.now().isoformat() # Update last active time
-    await update.message.reply_text("Audio xabaringiz qabul qilindi, tahlil qilinmoqda...")
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
-    try:
-        file = await context.bot.get_file(update.message.voice.file_id)
-        file_path = "voice.ogg"
-        await file.download_to_drive(file_path)
-        
-        # Using a free STT API (Hugging Face or similar)
-        # For now, let's use a placeholder or try a public endpoint
-        # Since I can't easily set up a HF token here, I'll use a public one if available
-        # Or I'll use the Puter.js method if I can get it to work
-        
-        transcription = transcribe_audio(file_path)
-        
-        # In a real deployment, I'd use:
-        # transcription = transcribe_audio(file_path)
-        
-        await update.message.reply_text(f"Sizning xabaringiz: {transcription}")
-        ai_response = get_ai_response(transcription, str(update.effective_user.id))
-        await update.message.reply_text(ai_response)
-        
-    except Exception as e:
-        logger.error(f"Voice Error: {e}")
-        await update.message.reply_text("Audio xabarni tushunishda xatolik yuz berdi.")
+    voice_file = await update.message.voice.get_file()
+    voice_path = f"voice_{user_id}.ogg"
+    await voice_file.download_to_drive(voice_path)
+    
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    transcribed_text = transcribe_audio(voice_path)
+    os.remove(voice_path)
+    
+    if "xatolik" in transcribed_text.lower() or "tushunmadim" in transcribed_text.lower():
+        await update.message.reply_text(transcribed_text)
+    else:
+        ai_response = get_ai_response(transcribed_text, user_id)
+        await update.message.reply_text(f"Siz: {transcribed_text}\n\nMustafa: {ai_response}")
 
 async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    if users.get(user_id, {}).get("is_banned", False):
-        await update.message.reply_text("Siz botdan foydalanishdan cheklangansiz.")
-        return
-    users[user_id]["last_active"] = datetime.now().isoformat() # Update last active time
     if not context.args:
-        await update.message.reply_text("Iltimos, rasm tavsifini yozing. Masalan: /image chiroyli tabiat")
+        await update.message.reply_text("Rasm tavsifini kiriting. Masalan: /image ko'k rangli mushuk")
         return
     
     prompt = " ".join(context.args)
-    await update.message.reply_text("Rasm tayyorlanmoqda, iltimos kuting...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
-    
-    try:
-        image_url = generate_image_url(prompt)
-        await update.message.reply_photo(photo=image_url, caption=f"Siz so'ragan rasm: {prompt}")
-    except Exception as e:
-        logger.error(f"Image Error: {e}")
-        await update.message.reply_text("Rasm yaratishda xatolik yuz berdi.")
-
-async def prayer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    if users.get(user_id, {}).get("is_banned", False):
-        await update.message.reply_text("Siz botdan foydalanishdan cheklangansiz.")
-        return
-    users[user_id]["last_active"] = datetime.now().isoformat() # Update last active time
-    times = await get_prayer_times()
-    if times:
-        text = f"Namoz vaqtlari ({times['region']}):\n"
-        for key, val in times['times'].items():
-            text += f"{key.capitalize()}: {val}\n"
-        await update.message.reply_text(text)
-    else:
-        await update.message.reply_text("Ma'lumot olishda xatolik.")
-
-# Flask for Render 24/7
-def main():
-
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("namoz", prayer_command))
-    application.add_handler(CommandHandler("image", image_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
-
-    # Admin Commands
-    application.add_handler(CommandHandler("admin", admin_panel))
-    application.add_handler(CommandHandler("ban", ban_user_command))
-    application.add_handler(CommandHandler("unban", unban_user_command))
-    application.add_handler(CommandHandler("setpremium", set_premium_command))
-    application.add_handler(CommandHandler("unsetpremium", unset_premium_command))
-    application.add_handler(CommandHandler("users", list_users_command))
-
-    print("Bot is starting...")
-    application.run_polling(drop_pending_updates=True)
+    image_url = generate_image_url(prompt)
+    await update.message.reply_photo(photo=image_url, caption=f"Mana siz so'ragan rasm: {prompt}")
 
 if __name__ == '__main__':
-    main()
+    print("Bot is starting...")
+    keep_alive() # Start Flask server
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('admin', admin_panel))
+    application.add_handler(CommandHandler('ban', ban_user_command))
+    application.add_handler(CommandHandler('unban', unban_user_command))
+    application.add_handler(CommandHandler('setpremium', set_premium_command))
+    application.add_handler(CommandHandler('unsetpremium', unset_premium_command))
+    application.add_handler(CommandHandler('users', list_users_command))
+    application.add_handler(CommandHandler('image', image_command))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    
+    application.run_polling()
